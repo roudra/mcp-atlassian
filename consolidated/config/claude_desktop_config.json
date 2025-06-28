@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mcp-atlassian-cookie": {
+      "command": "python3",
+      "args": [
+        "/Users/arduor/Project/mcp-atlassian/consolidated/mcp_atlassian_cookie.py"
+      ],
+      "env": {
+        "JIRA_COOKIE_FILE": "/Users/arduor/Project/mcp-atlassian/consolidated/config/production_cookies.json",
+        "JIRA_CONFIG_FILE": "/Users/arduor/Project/mcp-atlassian/consolidated/config/jira_config.json"
+      }
+    }
+  }
+}

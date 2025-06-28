@@ -3,7 +3,7 @@
 import logging
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional, Dict, Union
 
 from ..utils.env import get_custom_headers, is_env_ssl_verify
 from ..utils.oauth import (
@@ -21,21 +21,23 @@ class JiraConfig:
     Handles authentication for Jira Cloud and Server/Data Center:
     - Cloud: username/API token (basic auth) or OAuth 2.0 (3LO)
     - Server/DC: personal access token or basic auth
+    - Cookie: session cookies from browser (any deployment)
     """
 
     url: str  # Base URL for Jira
-    auth_type: Literal["basic", "pat", "oauth"]  # Authentication type
-    username: str | None = None  # Email or username (Cloud)
-    api_token: str | None = None  # API token (Cloud)
-    personal_token: str | None = None  # Personal access token (Server/DC)
-    oauth_config: OAuthConfig | BYOAccessTokenOAuthConfig | None = None
+    auth_type: Literal["basic", "pat", "oauth", "cookie"]  # Authentication type
+    username: Optional[str] = None  # Email or username (Cloud)
+    api_token: Optional[str] = None  # API token (Cloud)
+    personal_token: Optional[str] = None  # Personal access token (Server/DC)
+    oauth_config: Optional[Union[OAuthConfig, BYOAccessTokenOAuthConfig]] = None
+    cookie_file: Optional[str] = None  # Path to cookie JSON file
     ssl_verify: bool = True  # Whether to verify SSL certificates
-    projects_filter: str | None = None  # List of project keys to filter searches
-    http_proxy: str | None = None  # HTTP proxy URL
-    https_proxy: str | None = None  # HTTPS proxy URL
-    no_proxy: str | None = None  # Comma-separated list of hosts to bypass proxy
-    socks_proxy: str | None = None  # SOCKS proxy URL (optional)
-    custom_headers: dict[str, str] | None = None  # Custom HTTP headers
+    projects_filter: Optional[str] = None  # List of project keys to filter searches
+    http_proxy: Optional[str] = None  # HTTP proxy URL
+    https_proxy: Optional[str] = None  # HTTPS proxy URL
+    no_proxy: Optional[str] = None  # Comma-separated list of hosts to bypass proxy
+    socks_proxy: Optional[str] = None  # SOCKS proxy URL (optional)
+    custom_headers: Optional[Dict[str, str]] = None  # Custom HTTP headers
 
     @property
     def is_cloud(self) -> bool:
@@ -75,22 +77,26 @@ class JiraConfig:
         username = os.getenv("JIRA_USERNAME")
         api_token = os.getenv("JIRA_API_TOKEN")
         personal_token = os.getenv("JIRA_PERSONAL_TOKEN")
+        cookie_file = os.getenv("JIRA_COOKIE_FILE")
 
         # Check for OAuth configuration
         oauth_config = get_oauth_config_from_env()
         auth_type = None
 
         # Use the shared utility function directly
-        is_cloud = is_atlassian_cloud_url(url)
+        is_cloud = is_atlassian_cloud_url(url) if url else False
 
-        if oauth_config:
+        # Check for cookie authentication first (works for both Cloud and Server/DC)
+        if cookie_file:
+            auth_type = "cookie"
+        elif oauth_config:
             # OAuth is available - could be full config or minimal config for user-provided tokens
             auth_type = "oauth"
         elif is_cloud:
             if username and api_token:
                 auth_type = "basic"
             else:
-                error_msg = "Cloud authentication requires JIRA_USERNAME and JIRA_API_TOKEN, or OAuth configuration (set ATLASSIAN_OAUTH_ENABLE=true for user-provided tokens)"
+                error_msg = "Cloud authentication requires JIRA_USERNAME and JIRA_API_TOKEN, or OAuth configuration (set ATLASSIAN_OAUTH_ENABLE=true for user-provided tokens), or JIRA_COOKIE_FILE"
                 raise ValueError(error_msg)
         else:  # Server/Data Center
             if personal_token:
@@ -99,7 +105,7 @@ class JiraConfig:
                 # Allow basic auth for Server/DC too
                 auth_type = "basic"
             else:
-                error_msg = "Server/Data Center authentication requires JIRA_PERSONAL_TOKEN or JIRA_USERNAME and JIRA_API_TOKEN"
+                error_msg = "Server/Data Center authentication requires JIRA_PERSONAL_TOKEN or JIRA_USERNAME and JIRA_API_TOKEN, or JIRA_COOKIE_FILE"
                 raise ValueError(error_msg)
 
         # SSL verification (for Server/DC)
@@ -124,6 +130,7 @@ class JiraConfig:
             api_token=api_token,
             personal_token=personal_token,
             oauth_config=oauth_config,
+            cookie_file=cookie_file,
             ssl_verify=ssl_verify,
             projects_filter=projects_filter,
             http_proxy=http_proxy,
@@ -176,6 +183,8 @@ class JiraConfig:
             return bool(self.personal_token)
         elif self.auth_type == "basic":
             return bool(self.username and self.api_token)
+        elif self.auth_type == "cookie":
+            return bool(self.cookie_file)
         logger.warning(
             f"Unknown or unsupported auth_type: {self.auth_type} in JiraConfig"
         )

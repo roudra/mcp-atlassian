@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mcp-atlassian-full-jira": {
+      "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+      "args": [
+        "/Users/arduor/Project/mcp-atlassian/consolidated/mcp_atlassian_full_jira.py"
+      ]
+    }
+  }
+}

@@ -71,6 +71,34 @@ class JiraClient:
                 cloud=True,  # OAuth is only for Cloud
                 verify_ssl=self.config.ssl_verify,
             )
+        elif self.config.auth_type == "cookie":
+            logger.debug(
+                f"Initializing Jira client with Cookie auth. "
+                f"URL: {self.config.url}, "
+                f"Cookie file: {self.config.cookie_file}"
+            )
+            
+            # Create a session for cookie authentication
+            session = Session()
+            
+            # Load cookies from file
+            self._load_cookies_to_session(session)
+            
+            # Initialize Jira with the cookie session
+            self.jira = Jira(
+                url=self.config.url,
+                session=session,
+                cloud=self.config.is_cloud,
+                verify_ssl=self.config.ssl_verify,
+            )
+            
+            # Override the session's request method to use browser-like behavior
+            original_request = session.request
+            
+            def browser_like_request(method, url, **kwargs):
+                return self._make_browser_like_request_internal(original_request, method, url, **kwargs)
+            
+            session.request = browser_like_request
         elif self.config.auth_type == "pat":
             logger.debug(
                 f"Initializing Jira client with Token (PAT) auth. "
@@ -185,6 +213,149 @@ class JiraClient:
         for header_name, header_value in self.config.custom_headers.items():
             self.jira._session.headers[header_name] = header_value
             logger.debug(f"Applied custom header: {header_name}")
+
+    def _load_cookies_to_session(self, session: Session) -> None:
+        """Load cookies from file to the session."""
+        import json
+        from pathlib import Path
+        
+        if not self.config.cookie_file:
+            return
+            
+        cookie_path = Path(self.config.cookie_file)
+        if not cookie_path.exists():
+            error_msg = f"Cookie file not found: {self.config.cookie_file}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        try:
+            with open(cookie_path, 'r', encoding='utf-8') as f:
+                cookie_data = json.load(f)
+            
+            # Handle different cookie file formats
+            cookies = {}
+            if isinstance(cookie_data, dict) and 'cookies' in cookie_data:
+                # Our cookie manager format
+                cookies = cookie_data['cookies']
+                # Also get the URL from the cookie file if not set in config
+                if not self.config.url and 'jira_url' in cookie_data:
+                    self.config.url = cookie_data['jira_url']
+            elif isinstance(cookie_data, dict):
+                # Direct cookie dictionary
+                cookies = cookie_data
+            
+            # Apply cookies to session
+            for name, value in cookies.items():
+                session.cookies.set(name, value)
+            
+            logger.info(f"✅ Loaded {len(cookies)} cookies from {self.config.cookie_file}")
+            
+            # Apply browser-like headers to fool rate limiting
+            # These headers make the requests appear as if they're coming from a real browser
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'X-Atlassian-Token': 'no-check',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"macOS"',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            })
+            
+            # Set the Referer header to the Jira URL to make it look like browser navigation
+            if self.config.url:
+                session.headers['Referer'] = f"{self.config.url.rstrip('/')}/secure/Dashboard.jspa"
+            
+        except json.JSONDecodeError as e:
+            error_msg = f"Invalid JSON in cookie file {self.config.cookie_file}: {e}"
+            logger.error(error_msg)
+            raise ValueError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Error loading cookies from {self.config.cookie_file}: {e}"
+            logger.error(error_msg)
+            raise ValueError(error_msg) from e
+
+    def _make_browser_like_request(self, method: str, url: str, **kwargs):
+        """Make a request that mimics browser behavior to avoid rate limiting.
+        
+        This method adds browser-like timing and headers to fool server-side
+        rate limiting that tries to detect automated requests.
+        """
+        import time
+        import random
+        
+        # Add small random delay to mimic human behavior (50-200ms)
+        delay = random.uniform(0.05, 0.2)
+        time.sleep(delay)
+        
+        # Ensure we have browser-like headers for this specific request
+        headers = kwargs.get('headers', {})
+        
+        # Add timestamp-based headers that browsers send
+        headers.update({
+            'DNT': '1',  # Do Not Track
+            'Upgrade-Insecure-Requests': '1',
+        })
+        
+        # For POST/PUT requests, add additional headers
+        if method.upper() in ['POST', 'PUT', 'PATCH']:
+            headers.update({
+                'Content-Type': 'application/json',
+                'Origin': self.config.url.rstrip('/') if self.config.url else '',
+            })
+        
+        kwargs['headers'] = headers
+        
+        # Make the request using the session
+        response = self.jira._session.request(method, url, **kwargs)
+        
+        # Add a small delay after the request to mimic browser processing time
+        time.sleep(random.uniform(0.01, 0.05))
+        
+        return response
+
+    def _make_browser_like_request_internal(self, original_request, method: str, url: str, **kwargs):
+        """Internal method to make browser-like requests that fool rate limiting."""
+        import time
+        import random
+        
+        # Add small random delay to mimic human behavior (50-200ms)
+        delay = random.uniform(0.05, 0.2)
+        time.sleep(delay)
+        
+        # Ensure we have browser-like headers for this specific request
+        headers = kwargs.get('headers', {})
+        
+        # Add timestamp-based headers that browsers send
+        headers.update({
+            'DNT': '1',  # Do Not Track
+            'Upgrade-Insecure-Requests': '1',
+        })
+        
+        # For POST/PUT requests, add additional headers
+        if method.upper() in ['POST', 'PUT', 'PATCH']:
+            headers.update({
+                'Content-Type': 'application/json',
+                'Origin': self.config.url.rstrip('/') if self.config.url else '',
+            })
+        
+        kwargs['headers'] = headers
+        
+        # Make the request using the original session method
+        response = original_request(method, url, **kwargs)
+        
+        # Add a small delay after the request to mimic browser processing time
+        time.sleep(random.uniform(0.01, 0.05))
+        
+        return response
 
     def _clean_text(self, text: str) -> str:
         """Clean text content by:
