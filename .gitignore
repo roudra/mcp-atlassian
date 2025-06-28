@@ -74,3 +74,5 @@ playground/
 
 # Claude
 .claude/
+consolidated/config/jira_config.json
+consolidated/config/production_cookies.json
